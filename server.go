@@ -417,8 +417,8 @@ func serverWriter(s *Server, w io.Writer, clientAddr string, responsesChan <-cha
 	e := newMessageEncoder(w, s.SendBufferSize, enabledCompression, &s.Stats)
 	defer e.Close()
 
-	var flushChan <-chan time.Time
-	t := time.NewTimer(s.FlushDelay)
+	//var flushChan <-chan time.Time
+	//t := time.NewTimer(s.FlushDelay)
 	var wr wireResponse
 	for {
 		var m *serverMessage
@@ -426,28 +426,16 @@ func serverWriter(s *Server, w io.Writer, clientAddr string, responsesChan <-cha
 		select {
 		case m = <-responsesChan:
 		default:
-			// Give the last chance for ready goroutines filling responsesChan :)
-			runtime.Gosched()
-
 			select {
 			case <-stopChan:
 				return
 			case m = <-responsesChan:
-			case <-flushChan:
-				if err := e.Flush(); err != nil {
-					if !isServerStop(stopChan) {
-						s.LogError("gorpc.Server: [%s]->[%s]: Cannot flush responses to underlying stream: [%s]", clientAddr, s.Addr, err)
-					}
-					return
-				}
-				flushChan = nil
-				continue
 			}
 		}
 
-		if flushChan == nil {
-			flushChan = getFlushChan(t, s.FlushDelay)
-		}
+		//if flushChan == nil {
+		//	flushChan = getFlushChan(t, s.FlushDelay)
+		//}
 
 		wr.ID = m.ID
 		wr.Response = m.Response
@@ -464,6 +452,9 @@ func serverWriter(s *Server, w io.Writer, clientAddr string, responsesChan <-cha
 		wr.Response = nil
 		wr.Error = ""
 
+		if err := e.Flush(); err != nil {
+			s.LogError("gorpc.Server: [%s]->[%s]. Cannot flush requests to underlying stream: [%s]", clientAddr, s.Addr, err)
+		}
 		s.Stats.incRPCCalls()
 	}
 }
