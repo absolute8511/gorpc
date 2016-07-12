@@ -3,7 +3,7 @@ package gorpc
 import (
 	"fmt"
 	"io"
-	//"runtime"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -752,8 +752,8 @@ func clientWriter(c *Client, w io.Writer, pendingRequests map[uint64]*AsyncResul
 	e := newMessageEncoder(w, c.SendBufferSize, !c.DisableCompression, &c.Stats)
 	defer e.Close()
 
-	//t := time.NewTimer(c.FlushDelay)
-	//var flushChan <-chan time.Time
+	t := time.NewTimer(c.FlushDelay)
+	var flushChan <-chan time.Time
 	var wr wireRequest
 	var msgID uint64
 	for {
@@ -762,16 +762,26 @@ func clientWriter(c *Client, w io.Writer, pendingRequests map[uint64]*AsyncResul
 		select {
 		case m = <-c.requestsChan:
 		default:
+			// Give the last chance for ready goroutines filling c.requestsChan :)
+			runtime.Gosched()
+
 			select {
 			case <-stopChan:
 				return
 			case m = <-c.requestsChan:
+			case <-flushChan:
+				if err = e.Flush(); err != nil {
+					err = fmt.Errorf("gorpc.Client: [%s]. Cannot flush requests to underlying stream: [%s]", c.Addr, err)
+					return
+				}
+				flushChan = nil
+				continue
 			}
 		}
 
-		//if flushChan == nil {
-		//	flushChan = getFlushChan(t, c.FlushDelay)
-		//}
+		if flushChan == nil {
+			flushChan = getFlushChan(t, c.FlushDelay)
+		}
 
 		if m.isCanceled() {
 			if m.done != nil {
@@ -821,9 +831,6 @@ func clientWriter(c *Client, w io.Writer, pendingRequests map[uint64]*AsyncResul
 			return
 		}
 		wr.Request = nil
-		if err = e.Flush(); err != nil {
-			c.LogError("gorpc.Client: [%s]. Cannot flush requests to underlying stream: [%s]", c.Addr, err)
-		}
 	}
 }
 
