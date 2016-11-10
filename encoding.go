@@ -5,6 +5,7 @@ import (
 	"compress/flate"
 	"encoding/gob"
 	"io"
+	"sync"
 )
 
 // RegisterType registers the given type to send via rpc.
@@ -17,6 +18,10 @@ import (
 //
 // There is no need in registering argument and return value types
 // for functions and methods registered via Dispatcher.
+
+var deflateWriterPool sync.Pool
+var inflateReaderPool sync.Pool
+
 func RegisterType(x interface{}) {
 	gob.Register(x)
 }
@@ -41,7 +46,9 @@ type messageEncoder struct {
 
 func (e *messageEncoder) Close() error {
 	if e.zw != nil {
-		return e.zw.Close()
+		err := e.zw.Close()
+		deflateWriterPool.Put(e.zw)
+		return err
 	}
 	return nil
 }
@@ -72,7 +79,14 @@ func newMessageEncoder(w io.Writer, bufferSize int, enableCompression bool, s *C
 	ww := bw
 	var zw *flate.Writer
 	if enableCompression {
-		zw, _ = flate.NewWriter(bw, flate.BestSpeed)
+		deflateW := deflateWriterPool.Get()
+		if deflateW == nil {
+			deflateW, _ = flate.NewWriter(bw, flate.BestSpeed)
+		} else {
+			deflateW.(*flate.Writer).Reset(bw)
+		}
+
+		zw = deflateW.(*flate.Writer)
 		ww = bufio.NewWriterSize(zw, bufferSize)
 	}
 
@@ -91,7 +105,9 @@ type messageDecoder struct {
 
 func (d *messageDecoder) Close() error {
 	if d.zr != nil {
-		return d.zr.Close()
+		err := d.zr.Close()
+		inflateReaderPool.Put(d.zr)
+		return err
 	}
 	return nil
 }
@@ -107,7 +123,13 @@ func newMessageDecoder(r io.Reader, bufferSize int, enableCompression bool, s *C
 	rr := br
 	var zr io.ReadCloser
 	if enableCompression {
-		zr = flate.NewReader(br)
+		inflateR := inflateReaderPool.Get()
+		if inflateR == nil {
+			inflateR = flate.NewReader(br)
+		} else {
+			inflateR.(flate.Resetter).Reset(br, nil)
+		}
+		zr = inflateR.(io.ReadCloser)
 		rr = bufio.NewReaderSize(zr, bufferSize)
 	}
 
