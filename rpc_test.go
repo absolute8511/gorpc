@@ -195,6 +195,40 @@ func TestClientStartStop(t *testing.T) {
 	}
 }
 
+func TestClientRetryMax(t *testing.T) {
+	oldMax := maxRetryDial
+	maxRetryDial = 2
+	defer func() {
+		maxRetryDial = oldMax
+	}()
+
+	c := &Client{
+		Addr:           "127.0.0.1:0",
+		RequestTimeout: time.Millisecond,
+	}
+	c.Start()
+	for {
+		if c.ShouldRemoved() {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	_, err := c.Call(123)
+	if !ShouldRemovedError(err) {
+		t.Errorf("should be removed error: %v", err)
+	}
+	err = c.Send(123)
+	if !ShouldRemovedError(err) {
+		t.Errorf("should be removed error: %v", err)
+	}
+	_, err = c.CallAsync(123)
+	if !ShouldRemovedError(err) {
+		t.Errorf("should be removed error: %v", err)
+	}
+	c.Stop()
+	time.Sleep(10 * time.Millisecond)
+}
+
 func TestRequestTimeout(t *testing.T) {
 	addr := getRandomAddr()
 	s := &Server{

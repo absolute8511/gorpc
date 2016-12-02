@@ -1,12 +1,18 @@
 package gorpc
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
+)
+
+var (
+	maxRetryDial     = 20
+	errShouldRemoved = errors.New("this client connection should be removed for error")
 )
 
 // Client implements RPC client.
@@ -110,6 +116,7 @@ type Client struct {
 
 	clientStopChan chan struct{}
 	stopWg         sync.WaitGroup
+	shouldRemoved  int32
 }
 
 // Start starts rpc client. Establishes connection to the server on Client.Addr.
@@ -166,6 +173,14 @@ func (c *Client) Stop() {
 	close(c.clientStopChan)
 	c.stopWg.Wait()
 	c.clientStopChan = nil
+}
+
+func ShouldRemovedError(err error) bool {
+	return err == errShouldRemoved
+}
+
+func (c *Client) ShouldRemoved() bool {
+	return atomic.LoadInt32(&c.shouldRemoved) == 1
 }
 
 // PendingRequestsCount returns the instant number of pending requests.
@@ -351,6 +366,9 @@ func (c *Client) CallAsync(request interface{}) (*AsyncResult, error) {
 }
 
 func (c *Client) callAsync(request interface{}, skipResponse bool, usePool bool) (m *AsyncResult, err error) {
+	if c.ShouldRemoved() {
+		return nil, errShouldRemoved
+	}
 	if skipResponse {
 		usePool = true
 	}
@@ -639,6 +657,7 @@ func clientHandler(c *Client) {
 	var conn io.ReadWriteCloser
 	var err error
 	var stopping atomic.Value
+	retryCnt := 0
 
 	for {
 		dialChan := make(chan struct{})
@@ -662,14 +681,20 @@ func clientHandler(c *Client) {
 
 		if err != nil {
 			c.Stats.incDialErrors()
+			if retryCnt > maxRetryDial {
+				atomic.StoreInt32(&c.shouldRemoved, 1)
+				return
+			}
+			retryCnt++
 			select {
 			case <-c.clientStopChan:
 				return
-			case <-time.After(time.Second):
+			case <-time.After(time.Second * time.Duration(retryCnt)):
 			}
 			continue
 		}
 
+		retryCnt = 0
 		clientHandleConnection(c, conn)
 
 		select {
