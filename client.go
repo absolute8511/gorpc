@@ -686,10 +686,14 @@ func clientHandler(c *Client) {
 				return
 			}
 			retryCnt++
+			reconnWait := time.Second * time.Duration(retryCnt)
+			if len(c.requestsChan) > 0 && retryCnt > 3 {
+				reconnWait = time.Second * 3
+			}
 			select {
 			case <-c.clientStopChan:
 				return
-			case <-time.After(time.Second * time.Duration(retryCnt)):
+			case <-time.After(reconnWait):
 			}
 			continue
 		}
